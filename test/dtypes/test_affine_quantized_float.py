@@ -24,6 +24,7 @@ import pytest
 import torch
 from torch._inductor.test_case import TestCase as InductorTestCase
 from torch.testing._internal import common_utils
+from torchao.utils import auto_detect_device
 
 from torchao.dtypes.floatx.float8_layout import Float8AQTTensorImpl, preprocess_scale
 from torchao.float8.float8_utils import compute_error
@@ -633,7 +634,7 @@ class TestAffineQuantizedFloat8Compile(InductorTestCase):
     def test_preprocess_scale_3d_reshape(self):
         """Test that preprocess_scale correctly handles 3D scale tensors"""
         device = "cpu"  # Use CPU for basic functionality test
-
+        
         # Test 1: PerTensor scale (scalar) - should reshape to (1, 1)
         per_tensor_scale = torch.tensor(0.5, device=device)
         result = preprocess_scale(per_tensor_scale, (2, 4, 8))

@@ -13,7 +13,7 @@ from torch.testing._internal.common_utils import (
     parametrize,
     run_tests,
 )
-
+from torchao.utils import auto_detect_device
 from torchao.dtypes.floatx import (
     FloatxTensorCoreLayout,
     from_scaled_tc_floatx,
@@ -34,6 +34,7 @@ from torchao.quantization import (
 )
 from torchao.testing.utils import skip_if_rocm
 from torchao.utils import TORCH_VERSION_AT_LEAST_2_5, is_fbcode
+
 
 _DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 _Floatx_DTYPES = [(3, 2), (2, 2)]
@@ -87,7 +88,6 @@ class TestFloatxTensorCoreAQTTensorImpl(TestCase):
         )
         torch.testing.assert_close(actual, expected)
 
-    @unittest.skipIf(not torch.cuda.is_available(), reason="CUDA not available")
     @parametrize("ebits,mbits", _Floatx_DTYPES)
     def test_to_copy_device(self, ebits, mbits):
         from torchao.quantization.quant_primitives import (
@@ -99,14 +99,20 @@ class TestFloatxTensorCoreAQTTensorImpl(TestCase):
         scale = _choose_qparams_affine_floatx(x, ebits, mbits)
         x = _quantize_affine_floatx(x, scale, ebits, mbits)
         _layout = FloatxTensorCoreLayout(ebits, mbits)
-        floatx_tensor_impl = FloatxTensorCoreAQTTensorImpl.from_plain(
-            x, scale, None, _layout
-        ).cuda()
-        assert floatx_tensor_impl.device.type == "cuda"
-        floatx_tensor_impl = floatx_tensor_impl.cpu()
-        assert floatx_tensor_impl.device.type == "cpu"
+        if auto_detect_device() == "cuda":
+            floatx_tensor_impl = FloatxTensorCoreAQTTensorImpl.from_plain(
+                x, scale, None, _layout
+            ).cuda()
+            assert floatx_tensor_impl.device.type == "cuda"
+        elif auto_detect_device() == "cpu":
+            floatx_tensor_impl = FloatxTensorCoreAQTTensorImpl.from_plain(
+                x, scale, None, _layout
+            ).cpu()
+            assert floatx_tensor_impl.device.type == "cpu"
+        else:
+            raise RuntimeError("Unsupported device")
+        
 
-    @unittest.skipIf(not torch.cuda.is_available(), reason="CUDA not available")
     @unittest.skipIf(
         not TORCH_VERSION_AT_LEAST_2_5,
         reason="quantization only works with torch.compile for 2.5+",
@@ -118,14 +124,13 @@ class TestFloatxTensorCoreAQTTensorImpl(TestCase):
     @skip_if_rocm("ROCm enablement in progress")
     def test_fpx_weight_only(self, ebits, mbits, bias, dtype):
         N, OC, IC = 4, 256, 64
-        device = "cuda"
-
+        device = auto_detect_device()
         linear = torch.nn.Linear(IC, OC, bias=bias, device=device, dtype=dtype)
         fpx_linear = copy.deepcopy(linear)
-        quantize_(fpx_linear, fpx_weight_only(ebits, mbits))
+        quantize_(fpx_linear, fpx_weight_only(ebits, mbits), device=device)
 
         x = torch.randn(N, IC, device=device, dtype=dtype)
-        expected = fpx_linear(x)
+        expected = fpx_linear(x).device(device)
         actual = torch.compile(fpx_linear, fullgraph=True)(x)
         # somehow compile now changes the result a bit
         torch.testing.assert_close(actual, expected)

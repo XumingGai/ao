@@ -35,7 +35,8 @@ from torchao.quantization.quant_api import (
 )
 from torchao.testing.utils import skip_if_rocm
 from torchao.utils import TORCH_VERSION_AT_LEAST_2_5
-
+from torchao.utils import auto_detect_device
+_DEVICE = auto_detect_device()
 
 def _apply_weight_only_uint4_quant(model):
     def fn(mod):
@@ -52,11 +53,9 @@ def _apply_weight_only_uint4_quant(model):
     )
 
 
-@unittest.skip(
-    "FAILED test/dtypes/test_uint4.py::TestUInt4::test_basic_tensor_ops - AttributeError: module 'torch' has no attribute 'uint4'"
-)
 class TestUInt4(QuantizationTestCase):
     def test_basic_tensor_ops(self):
+
         x = UInt4Tensor(
             torch.tensor(
                 [
@@ -65,6 +64,7 @@ class TestUInt4(QuantizationTestCase):
                     [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF],
                 ],
                 dtype=torch.uint8,
+                device=_DEVICE
             )
         )
         self.assertEqual(x.shape, (3, 16))
@@ -78,6 +78,7 @@ class TestUInt4(QuantizationTestCase):
                     [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF],
                 ],
                 dtype=torch.uint8,
+                device=_DEVICE
             )
         )
         self.assertEqual(x[0:1, :], expected)
@@ -89,6 +90,7 @@ class TestUInt4(QuantizationTestCase):
                     [0x23, 0x45],
                 ],
                 dtype=torch.uint8,
+                device=_DEVICE
             )
         )
         self.assertEqual(x[:, 2:6], expected)
@@ -244,7 +246,7 @@ class TestUInt4(QuantizationTestCase):
         # program capture
         m = copy.deepcopy(m_eager)
         if TORCH_VERSION_AT_LEAST_2_5:
-            m = torch.export.texport_for_training(
+            m = torch.export.export_for_training(
                 m,
                 example_inputs,
             ).module()

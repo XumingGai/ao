@@ -40,7 +40,9 @@ from torchao.dtypes.nf4tensor import (
 )
 from torchao.testing.utils import skip_if_rocm
 from torchao.utils import TORCH_VERSION_AT_LEAST_2_7
+from torchao.utils import auto_detect_device
 
+_DEVICE = auto_detect_device()
 bnb_available = False
 
 try:
@@ -172,11 +174,10 @@ class TestNF4Linear(TestCase):
         assert err_native < 0.5 * dim
         assert err_bnb < 0.5 * dim
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need cuda for test")
     @parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
     def test_load_from_state_dicts(self, dtype: torch.dtype):
         """Tests loading to and from different module state dicts"""
-        input_tensor = torch.rand(64, device="cuda", dtype=dtype)
+        input_tensor = torch.rand(64, device=_DEVICE, dtype=dtype)
         base_mod = self.TestMod(input_tensor, 32, 2)
 
         dummy_dict = {"param": input_tensor}
@@ -226,19 +227,23 @@ class TestNF4Linear(TestCase):
                 input_tensor, nf4_to_dtype, atol=0.13, rtol=0.13
             )
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need cuda for test")
     def test_to_copy_device(self):
         input_tensor = torch.rand(128, device="cpu")
         t = to_nf4(input_tensor, 32, 2)
         assert t.device == torch.device("cpu")
-        z = t.cuda()
-        assert z.device.type == "cuda"  # Because the device could be cuda:0
+        if torch.cuda.is_available():
+            z = t.cuda()
+        elif torch.xpu.is_available():
+            z = t.xpu()
+        else:
+            z = t.cpu()
+        assert z.device.type == _DEVICE  # Because the device could be cuda:0
         x = z.cpu()
         assert x.device == torch.device("cpu")
 
-        input_tensor = torch.rand(128, device="cuda")
+        input_tensor = torch.rand(128, device=_DEVICE)
         t = to_nf4(input_tensor, 32, 2)
-        assert t.device.type == "cuda"
+        assert t.device.type == _DEVICE
 
     @parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
     def test_to_dtype(self, dtype: torch.dtype):
@@ -248,16 +253,14 @@ class TestNF4Linear(TestCase):
         assert type(input_tensor_nf4.to(dtype)) is torch.Tensor
         assert input_tensor_nf4.to(dtype).dtype is dtype
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
     @parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
     def test_smoketest_linear(self, dtype: torch.dtype):
-        a = torch.randn(32, 32, dtype=dtype, device="cuda")
+        a = torch.randn(32, 32, dtype=dtype, device="cpu")
         a_nf4 = torchao.dtypes.to_nf4(a, 16, 2)
         inp = torch.randn(2, 32, 32, dtype=a.dtype, device=a.device)
         _ = torch.nn.functional.linear(inp, a)
         _ = torch.nn.functional.linear(inp, a_nf4)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
     @parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
     def test_smoketest_linear_compile(self, dtype: torch.dtype):
         if (
@@ -268,17 +271,16 @@ class TestNF4Linear(TestCase):
             self.skipTest("test requires SM capability of at least (8, 0).")
         if version.parse(torch.__version__) < version.parse("2.3.0"):
             self.skipTest("test requires 2.3.0 and above for tracing NF4Tensor")
-        a = torch.randn(32, 32, dtype=dtype, device="cuda")
+        a = torch.randn(32, 32, dtype=dtype, device=_DEVICE)
         a_nf4 = torchao.dtypes.to_nf4(a, 16, 2)
         inp = torch.randn(2, 32, 32, dtype=a.dtype, device=a.device)
         _ = torch.compile(torch.nn.functional.linear, mode="max-autotune")(inp, a_nf4)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
     @parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
     @parametrize("shape", [(16, 16), (32, 16)])
     @parametrize("chunk_size", [8, 16, 32])
     def test_chunk_size_equivalence(self, dtype: torch.dtype, shape, chunk_size):
-        a = torch.randn(shape, device="cuda", dtype=dtype)
+        a = torch.randn(shape, device=_DEVICE, dtype=dtype)
         with unittest.mock.patch("torchao.dtypes.nf4tensor.CHUNK_SIZE", chunk_size):
             nf4_patched = to_nf4(a, 16, 2)
         # This will be essentially no chunking since the numel is alot smaller than default chunk_size
@@ -286,19 +288,17 @@ class TestNF4Linear(TestCase):
 
         torch.testing.assert_close(nf4_patched.quantized_data, nf4_base.quantized_data)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
     @parametrize("input_size", [(512 * 512,), (512, 512)])
     def test_empty_like(self, input_size: Union[Tuple[int], int]):
-        nf4_tensor = to_nf4(torch.rand(input_size, device="cuda"))
+        nf4_tensor = to_nf4(torch.rand(input_size, device=_DEVICE))
         new_tensor = torch.empty_like(nf4_tensor, device="cpu")
         self.assertTrue(isinstance(new_tensor, NF4Tensor))
         self.assertEqual(new_tensor.get_device(), -1)  # that it's on CPU
         self.assertEqual(new_tensor.size(), nf4_tensor.size())
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
     @parametrize("compile", [False, True])
     def test_quantize_api(self, compile):
-        nf4_linear = nn.Linear(512, 512, device="cuda")
+        nf4_linear = nn.Linear(512, 512, device=_DEVICE)
         torchao.quantize_(nf4_linear, nf4_weight_only())
         assert isinstance(nf4_linear.weight, NF4Tensor)
 
@@ -309,14 +309,14 @@ class TestNF4Linear(TestCase):
             nf4_linear.compile()
             ref_linear.compile()
 
-        nf4_x = torch.randn(2, 512, device="cuda").requires_grad_()
+        nf4_x = torch.randn(2, 512, device=_DEVICE).requires_grad_()
         ref_x = nf4_x.detach().clone().requires_grad_()
 
         nf4_out = nf4_linear(nf4_x)
         ref_out = ref_linear(ref_x)
         self.assertEqual(nf4_out, ref_out)
 
-        grad_out = torch.randn(2, 512, device="cuda")
+        grad_out = torch.randn(2, 512, device=_DEVICE)
         nf4_out.backward(grad_out)
         ref_out.backward(grad_out)
         self.assertEqual(nf4_x.grad, ref_x.grad)
@@ -502,15 +502,14 @@ class TestFSDPOps(TestCase):
                     nf4_tensor, nf4_tensor.size(), stride, nf4_tensor.storage_offset()
                 )
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
     def test_pin_memory(self):
-        nf4_tensor = to_nf4(torch.randn(512 * 512))
+        nf4_tensor = to_nf4(torch.randn(512 * 512, device=_DEVICE))
         self.assertFalse(nf4_tensor.is_pinned())
 
         nf4_tensor = nf4_tensor.pin_memory()
         self.assertTrue(nf4_tensor.is_pinned())
-
-        nf4_tensor = to_nf4(torch.randn(512 * 512, device="cuda"))
+        
+        nf4_tensor = to_nf4(torch.randn(512 * 512, device=_DEVICE))
         self.assertFalse(nf4_tensor.is_pinned())
 
     @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
@@ -536,9 +535,8 @@ class TestFSDPOps(TestCase):
         self.assertEqual(nf4_tensor.dtype, torch.bfloat16)
         self.assertEqual(type(nf4_tensor), torch.Tensor)  # dequantized
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
     def test_to_cpu(self):
-        nf4_tensor = to_nf4(torch.randn(512 * 512, device="cuda"))
+        nf4_tensor = to_nf4(torch.randn(512 * 512, device=_DEVICE))
         nf4_tensor = nf4_tensor.cpu()
         self.assertEqual(nf4_tensor.device.type, "cpu")
         for attr in _INNER_TENSOR_NAMES_FOR_SHARDING:
@@ -546,16 +544,21 @@ class TestFSDPOps(TestCase):
             self.assertEqual(inner_tensor.device.type, "cpu")
         nf4_tensor.get_original_weight()  # make sure we can dequantize
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
     def test_to_module(self):
         linear = nn.Linear(512, 512, bias=False)
         linear.weight = nn.Parameter(
             to_nf4(linear.weight.detach()), requires_grad=False
         )
-        linear.cuda()
-        self.assertEqual(linear.weight.device.type, "cuda")
+        if torch.cuda.is_available():
+            linear.cuda()
+        elif torch.xpu.is_available():
+            linear.xpu()
+        else:
+            linear.cpu()
+
+        self.assertEqual(linear.weight.device.type, _DEVICE)
         weight = linear.weight.get_original_weight()
-        self.assertEqual(weight.device.type, "cuda")
+        self.assertEqual(weight.device.type, _DEVICE)
 
         linear.cpu()
         self.assertEqual(linear.weight.device.type, "cpu")
@@ -566,20 +569,19 @@ class TestFSDPOps(TestCase):
         linear.weight = nn.Parameter(
             to_nf4(linear.weight.detach()), requires_grad=False
         )
-        linear.to("cuda")
-        self.assertEqual(linear.weight.device.type, "cuda")
+        linear.to(_DEVICE)
+        self.assertEqual(linear.weight.device.type, _DEVICE)
         weight = linear.weight.get_original_weight()
-        self.assertEqual(weight.device.type, "cuda")
+        self.assertEqual(weight.device.type, _DEVICE)
 
         linear.to("cpu")
         self.assertEqual(linear.weight.device.type, "cpu")
         weight = linear.weight.get_original_weight()
         self.assertEqual(weight.device.type, "cpu")
 
-    @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
     @parametrize("input_size", [512 * 512, (512 * 512,), (512, 512)])
     def test_tensor_deepcopy(self, input_size: Union[Tuple[int], int]):
-        nf4_orig = to_nf4(torch.randn(input_size, device="cuda"))
+        nf4_orig = to_nf4(torch.randn(input_size, device=_DEVICE))
         nf4_clone = copy.deepcopy(nf4_orig)
         self.assertEqual(
             nf4_clone.get_original_weight(), nf4_orig.get_original_weight()
