@@ -38,6 +38,7 @@ RUN --mount=type=bind,source=.git,target=.git \
     if [ "$GIT_REPO_CHECK" != 0 ]; then bash tools/check_repo.sh; fi
 
 ENV PIP_NO_BUILD_ISOLATION=0
+ENV USE_CPU_KERNELS=1
 
 # Use python3 now that it's set to python3.10 and has pip
 RUN --mount=type=cache,target=/root/.cache/pip \
